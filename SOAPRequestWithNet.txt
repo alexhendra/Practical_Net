@@ -1,0 +1,130 @@
+public static class AXLSoapRequest
+    {
+        //public static ServiceResult ExecuteWebRequest(string serviceUrl, string contentParameter)
+        //{
+        //    return ExecuteWebRequest(serviceUrl, contentParameter, "POST");
+        //}
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2200:RethrowToPreserveStackDetails")]
+        public static ServiceResult ExecuteWebRequest(int IdPhoneRequest, string logID, string server, string serviceUrl, string contentParameter, string HTTPMethod, string HTTPHeaderSOAPAction)
+        {
+            var log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType.ToString(), Constants.ApplicationID, logID);
+            log.Debug("Start AXLSoapRequest.ExecuteWebRequest");
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.IDPhoneRequest : " + IdPhoneRequest.ToString());
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.CallManagerIP : " + server);
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.ServicesUrl : " + serviceUrl);
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.ServiceParameter : " + contentParameter);
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.HTTPMethod : " + HTTPMethod);
+            log.Debug("AXLSoapRequest.ExecuteWebRequest.Parameter.HTTPHeaderSOAPAction : " + HTTPHeaderSOAPAction);
+
+            ServiceResult result = new ServiceResult() { APIType = "AXL" };
+            serviceUrl = "https://" + server + "/" + serviceUrl;
+
+            string temp = string.Empty;
+            HttpWebRequest req;
+
+            StreamReader sr = null;
+            Stream s = null;
+            WebResponse resp = null;
+
+            KeyValuePair<string, string> serviceAccount = Helper.ServiceAccountCredential(logID);
+
+            try
+            {
+                req = (HttpWebRequest)WebRequest.Create(serviceUrl);
+                int startHostUrl = serviceUrl.IndexOf("://", StringComparison.OrdinalIgnoreCase) + 3;
+                int endHostUrl = serviceUrl.IndexOf("/", startHostUrl,StringComparison.OrdinalIgnoreCase);
+                //ServicePointManager.CertificatePolicy = new CertificateForcePolicy();
+                
+                ServicePointManager.ServerCertificateValidationCallback +=  new RemoteCertificateValidationCallback((sender, certificate, chain, policyErrors) => { return true; });
+
+                req.Method = HTTPMethod;
+                req.Host = serviceUrl.Substring(startHostUrl, endHostUrl - startHostUrl ); // "10.90.215.150:8443";
+                req.ProtocolVersion = System.Net.HttpVersion.Version10;
+                req.ContentType = "text/xml";
+                req.Accept = "text/xml";
+                req.Headers.Add("Authorization", "Basic " + Convert.ToBase64String(System.Text.ASCIIEncoding.ASCII.GetBytes(serviceAccount.Key + ":" + serviceAccount.Value)));
+                if (!string.IsNullOrEmpty(HTTPHeaderSOAPAction))
+                {
+                    req.Headers.Add("SOAPAction", HTTPHeaderSOAPAction);
+                }
+                req.ContentLength = contentParameter.Length;
+
+                byte[] buffer = System.Text.Encoding.UTF8.GetBytes(contentParameter);
+                req.ContentLength = buffer.Length;
+                try
+                {
+                    s = req.GetRequestStream();
+                    s.Write(buffer, 0, buffer.Length);
+                    s.Close();
+                
+                    resp = req.GetResponse();
+                    s = resp.GetResponseStream();
+                    sr = new StreamReader(s);
+
+                    temp = sr.ReadToEnd();
+                    result.HTTPResponseText = temp;                
+                }
+                catch (WebException ex)
+                {
+                    if (ex.Response != null)
+                    {
+                        using (var streamError = ex.Response.GetResponseStream())
+                        {
+                            var readerError = new StreamReader(streamError);
+                            temp = readerError.ReadToEnd();
+                            result.HTTPResponseText = temp;
+                            result.Status = ServiceStatus.Error;
+                            //result.ErrorMessage = temp;
+                        }
+                    }
+                    else
+                    {
+                        temp = ex.Message.ToString();
+                        result.HTTPResponseText = temp;
+                        result.Status = ServiceStatus.Error;
+                    }
+                }
+                
+            }
+            catch (Exception ex)
+            {
+                temp = ex.ToString();
+                result.Status = ServiceStatus.Error;
+                result.ErrorMessage = temp;
+            }
+            finally
+            {
+                if (String.IsNullOrEmpty(temp))
+                {
+                    temp = "No Response";
+                }
+
+                //log service API
+                using (Database database1 = new Database(logID, Constants.ApplicationID, Constants.ConnectionAlias))
+                {
+                    database1.AddInParameter("PhoneRequestId", IdPhoneRequest);
+                    database1.AddInParameter("ServiceUrl", serviceUrl);
+                    database1.AddInParameter("Parameter", contentParameter);
+                    database1.AddInParameter("HTTPMethod", HTTPMethod);
+                    database1.AddInParameter("HTTPHeaderSOAPAction", HTTPHeaderSOAPAction);
+                    database1.AddInParameter("Reponse", temp);
+                    database1.AddInParameter("ServiceStatus", result.Status.ToString());
+                    database1.AddInParameter("UTCCreatedBy", serviceAccount.Key);
+
+                    database1.ExecuteNonQuery("USP_InsertCiscoAPILog");
+
+                }
+                if (sr != null) sr.Close();
+                //if (s != null) s.Close();
+                if (resp != null) resp.Close();
+            }
+
+            if(String.IsNullOrEmpty(result.ErrorMessage))
+                result.ErrorMessage = result.HTTPResponseText;
+
+            log.Debug("End AXLSoapRequest.ExecuteWebRequest");
+
+            return result;
+        }
+    }

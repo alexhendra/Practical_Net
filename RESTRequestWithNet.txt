@@ -1,0 +1,108 @@
+public static class RESTRequest
+    {
+        public static ServiceResult Execute(int IdPhoneRequest, string logID, string hostName, string serviceUrl, string contentParameter, string HTTPMethod)
+        {
+            ServiceResult result = new ServiceResult() { APIType = "REST" }; ;
+            KeyValuePair<string, string> serviceAccount = Helper.ServiceAccountCredential(logID);
+                            
+            try
+            {
+                var temp = LookupData.GetValues(logID, "SecurityProtocol", "REST");
+                string RESTSecurityProtocol = temp.Count > 0 ? temp[0].Value : "";
+
+                //SSL support
+                switch (RESTSecurityProtocol)
+                {
+                    case "SSL3": ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3; break;
+                    case "TLS": ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls; break;
+                    case "TLS11": ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls11; break;
+                    case "TLS12": ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12; break;
+                    default: ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3; break;                    
+                }
+
+                ServicePointManager.ServerCertificateValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
+
+                //ServicePointManager.CertificatePolicy = new BruteForcePolicy();
+
+                HttpClient client = new HttpClient();
+                client.BaseAddress = new Uri("https://" + hostName + "/");
+
+                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                client.DefaultRequestHeaders.Add("Authorization", "Basic " + Convert.ToBase64String(System.Text.ASCIIEncoding.ASCII.GetBytes(serviceAccount.Key + ":" + serviceAccount.Value)));
+
+                // Send the request.
+                var resp = new HttpResponseMessage();
+
+                if (HTTPMethod.Equals("PUT", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Create the JSON formatter. Use the JSON formatter to create the content of the request body.
+                    MediaTypeFormatter jsonFormatter = new JsonMediaTypeFormatter();
+                    dynamic d = JObject.Parse(contentParameter);
+                    HttpContent content = new ObjectContent<dynamic>(d, jsonFormatter);
+                    resp = client.PutAsync(serviceUrl, content).Result; // Blocking call!
+                }
+                else if (HTTPMethod.Equals("GET", StringComparison.OrdinalIgnoreCase))
+                {
+                    resp = client.GetAsync(serviceUrl).Result; // Blocking call!
+                }
+                else if (HTTPMethod.Equals("DELETE", StringComparison.OrdinalIgnoreCase))
+                {
+                    resp = client.DeleteAsync(serviceUrl).Result; // Blocking call!
+                }
+                else
+                {
+                    // Create the JSON formatter. Use the JSON formatter to create the content of the request body.
+                    MediaTypeFormatter jsonFormatter = new JsonMediaTypeFormatter();
+                    dynamic d = JObject.Parse(contentParameter);
+                    HttpContent content = new ObjectContent<dynamic>(d, jsonFormatter);
+                    resp = client.PostAsync(serviceUrl, content).Result; // Blocking call!
+                }
+
+                // resp.StatusCode success http status 2XX http://en.wikipedia.org/wiki/List_of_HTTP_status_codes
+                if (resp.StatusCode == HttpStatusCode.OK || resp.StatusCode == HttpStatusCode.Created
+                    || resp.StatusCode == HttpStatusCode.Accepted || resp.StatusCode == HttpStatusCode.NoContent
+                    || resp.StatusCode == HttpStatusCode.PartialContent)
+                {
+                    result.Status = ServiceStatus.Success;
+                }
+                else
+                {
+                    result.Status = ServiceStatus.Error;
+                }
+                result.HTTPStatus = resp.StatusCode.ToString();
+                result.HTTPResponseText = resp.Content.ReadAsStringAsync().Result;
+
+            }
+            catch (Exception error)
+            {
+                result.ErrorMessage = error.ToString();
+                result.Status = ServiceStatus.Error;
+            }
+            finally
+            {
+                if (String.IsNullOrEmpty(result.HTTPResponseText))
+                {
+                    result.HTTPResponseText = "No Response";
+                }
+                //log service API
+                using (Database database1 = new Database(logID, Constants.ApplicationID, Constants.ConnectionAlias))
+                {
+                    database1.AddInParameter("PhoneRequestId", IdPhoneRequest);
+                    database1.AddInParameter("ServiceUrl", hostName);
+                    database1.AddInParameter("Parameter", serviceUrl);
+                    database1.AddInParameter("HTTPMethod", HTTPMethod);
+                    database1.AddInParameter("HTTPHeaderSOAPAction", "");
+                    database1.AddInParameter("Reponse", result.HTTPResponseText);
+                    database1.AddInParameter("ServiceStatus", result.Status.ToString());
+                    database1.AddInParameter("UTCCreatedBy", serviceAccount.Key);
+
+                    database1.ExecuteNonQuery("USP_InsertCiscoAPILog");
+
+                }
+            }
+            
+            return result;
+        }
+
+        
+    }
